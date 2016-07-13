@@ -26,9 +26,9 @@ class Dizzybot(object):
         
     def __del__(self):
         self.stop()
-
+        
     def log(self, evt):
-        """Store a special log message type in the recent dequeue."""
+        """Store an event in the ring buffer."""
         self.recent.append(evt)
         
     def respond(self, evt, text):
