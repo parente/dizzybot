@@ -27,12 +27,9 @@ class Dizzybot(object):
     def __del__(self):
         self.stop()
 
-    def log(self, text):
+    def log(self, evt):
         """Store a special log message type in the recent dequeue."""
-        self.recent.append({
-            'type': 'log',
-            'text': text
-        })
+        self.recent.append(evt)
         
     def respond(self, evt, text):
         """Respond to a text message in the same channel."""
@@ -73,45 +70,72 @@ class Dizzybot(object):
         
     def _on_ws_message(self, msg):
         if msg is None:
-            self.log('disconnected from websocket')
+            self.log({
+                'type': 'log',
+                'text': 'disconnected from websocket'
+            })
             self.ws = None
             try:
                 self.on_disconnect()
             except Exception as ex:
-                self.log(ex)
+                self.log({
+                    'type': 'exception',
+                    'exception': ex
+                })
             return
         evt = json.loads(msg)
-        self.recent.append(evt)
+        self.log(evt)
         try:
             self.on_event(evt)
         except Exception as ex:
-            self.log(ex)
+            self.log({
+                'type': 'exception',
+                'exception': ex
+            })
         
     def _on_ws_connect(self, future):
-        self.log('connected to websocket url')
+        self.log({
+            'type': 'log',
+            'text': 'connected to websocket url'
+        })
         self.ws = future.result()
         try:
             self.on_connect()
         except Exception as ex:
-            self.log(ex)
+            self.log({
+                'type': 'exception',
+                'exception': ex
+            })
         
     def _on_rtm_start(self, resp):
         if resp.code >= 400:
-            self.log('failed to fetch websocket url')
+            self.log({
+                'type': 'log',
+                'text': 'failed to fetch websocket url'
+            })
             raise RuntimeError(resp.code)
 
-        self.log('connecting to websocket url')
+        self.log({
+            'type': 'log',
+            'text': 'connecting to websocket url'
+        })
         info = json.loads(resp.body.decode('utf-8'))    
         websocket_connect(info['url'], callback=self._on_ws_connect, on_message_callback=self._on_ws_message)
     
     def _rtm_start(self):
-        self.log('fetching websocket url')
+        self.log({
+            'type': 'log',
+            'text': 'fetching websocket url'
+        })
         self.http_client.fetch('https://slack.com/api/rtm.start?no_unreads=true&simple_latest=true&token={}'.format(self.token),
                                callback=self._on_rtm_start)
 
     def _on_check_health(self):
         if self.ws is None:
-            self.log('reconnecting websocket')
+            self.log({
+                'type': 'log',
+                'text': 'reconnecting websocket'
+            })
             ioloop.IOLoop.current().call_later(0, self._rtm_start)
         
     def start(self):
