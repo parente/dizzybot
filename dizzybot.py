@@ -6,9 +6,14 @@ from tornado import ioloop
 
 class Dizzybot(object):
     """Tornado-based Slack bot.
-    
+
+    Attributes
+    ----------
+    recent:
+        Dequeue of recent events
+
     Parameters
-    ==========
+    ----------
     token: str
         Slack bot token
     max_recents: int
@@ -23,51 +28,119 @@ class Dizzybot(object):
         self.http_client = AsyncHTTPClient()
         self.heartbeat = ioloop.PeriodicCallback(self._on_check_health, health_check_interval)
         self.msg_id = 0
-        
+
     def __del__(self):
         self.stop()
-        
+
     def log(self, evt):
-        """Store an event in the ring buffer."""
+        """Stores an event in the ring buffer."""
         self.recent.append(evt)
-        
-    def respond(self, evt, text):
-        """Respond to a text message in the same channel."""
+
+    def respond(self, evt, msg, thread=True):
+        """Responds to a message in the same channel.
+
+        Parameters
+        ----------
+        evt: dict
+            Event object of type "message" received from Slack
+        msg: str or dict
+            Message to send back to Slack, either a text message (str) or full
+            message structure (dict) https://api.slack.com/docs/messages
+        thread: bool, optional
+            True to respond to a thread or start a thread on a message or False
+            to respond directly in a channel or 1:1 conversation
+
+        Returns
+        -------
+        int
+            Unique message ID
+        """
         if evt.get('type') != 'message' or evt.get('reply_to') is not None:
-            return False
-        
-        self.ws.write_message(json.dumps({
-            'id': self.msg_id,
+            return None
+
+        msg_id = self.msg_id
+        full_msg = {
+            'id': msg_id,
             'type': 'message',
-            'channel': evt['channel'],
-            'text': text
-        }))
+            'channel': evt['channel']
+        }
+        if isinstance(msg, dict):
+            full_msg.update(msg)
+        elif isinstance(msg, str):
+            full_msg['text'] = msg
+        else:
+            raise TypeError('unsupported msg type: {}'.format(type(msg)))
+
+        if thread:
+            full_msg['thread_ts'] = evt.get('thread_ts', evt.get('ts'))
+
+        self.ws.write_message(json.dumps(full_msg))
         self.msg_id += 1
-        return True
-        
-    def send(self, text, channel):
-        """Send a message to a channel."""
-        self.ws.write_message(json.dumps({
-            'id': self.msg_id,
+        return msg_id
+
+    def send(self, msg, channel):
+        """Sends a message to a channel.
+
+        Parameters
+        ----------
+        msg: str or dict
+            Message to send to Slack, either a text message (str) or full
+            message structure (dict) https://api.slack.com/docs/messages
+        channel: str
+            Slack channel ID
+
+        Returns
+        -------
+        int
+            Unique message ID
+        """
+        msg_id = self.msg_id
+        full_msg = {
+            'id': msg_id,
             'type': 'message',
             'channel': channel,
-            'text': text
-        }))
+        }
+        if isinstance(msg, dict):
+            full_msg.update(msg)
+        elif isinstance(msg, str):
+            full_msg['text'] = msg
+        else:
+            raise TypeError('unsupported msg type: {}'.format(type(msg)))
+        self.ws.write_message(json.dumps(full_msg))
         self.msg_id += 1
-        return True
-    
+        return msg_id
+
+    def write(self, msg):
+        """Writes a raw message dictionary on the websocket.
+
+        Parameters
+        ----------
+        msg: dict
+            Slack message https://api.slack.com/docs/messages
+
+        Returns
+        -------
+        int
+            Unique message ID
+        """
+        msg_id = self.msg_id
+        msg['id'] = msg_id
+        self.ws.write_message(json.dumps(msg))
+        self.msg_id += 1
+        return msg_id
+
     def on_connect(self):
         """Override to handle connection to Slack."""
         pass
-        
+
     def on_event(self, evt):
         """Override to handle Slack events."""
         pass
-    
+
     def on_disconnect(self):
         """Override to handle disconnection from Slack."""
         pass
-        
+
     def _on_ws_message(self, msg):
         if msg is None:
             self.log({
@@ -92,7 +165,7 @@ class Dizzybot(object):
                 'type': 'exception',
                 'exception': ex
             })
-        
+
     def _on_ws_connect(self, future):
         self.log({
             'type': 'log',
@@ -106,29 +179,37 @@ class Dizzybot(object):
                 'type': 'exception',
                 'exception': ex
             })
-        
+
     def _on_rtm_start(self, resp):
         if resp.code >= 400:
             self.log({
                 'type': 'log',
-                'text': 'failed to fetch websocket url'
+                'text': 'failed to fetch websocket url',
+                'error': resp
             })
-            raise RuntimeError(resp.code)
+            raise RuntimeError(resp)
+
+        info = json.loads(resp.body.decode('utf-8'))
+        if not info['ok']:
+            self.log({
+                'type': 'log',
+                'text': 'rtm.connect failed',
+                'error': info
+            })
+            raise RuntimeError(info)
 
         self.log({
             'type': 'log',
             'text': 'connecting to websocket url'
         })
-        info = json.loads(resp.body.decode('utf-8'))    
         websocket_connect(info['url'], callback=self._on_ws_connect, on_message_callback=self._on_ws_message)
-    
+
     def _rtm_start(self):
         self.log({
             'type': 'log',
             'text': 'fetching websocket url'
         })
-        self.http_client.fetch('https://slack.com/api/rtm.start?no_unreads=true&simple_latest=true&token={}'.format(self.token),
-                               callback=self._on_rtm_start)
+        self.http_client.fetch(f'https://slack.com/api/rtm.connect?token={self.token}', callback=self._on_rtm_start)
 
     def _on_check_health(self):
         if self.ws is None:
@@ -137,15 +218,15 @@ class Dizzybot(object):
                 'text': 'reconnecting websocket'
             })
             ioloop.IOLoop.current().call_later(0, self._rtm_start)
-        
+
     def start(self):
-        """Start the bot."""
+        """Connect to Slack and start reconnection attempts."""
         self.heartbeat.stop()
         self.heartbeat.start()
         self._on_check_health()
-            
+
     def stop(self):
-        """Stop the bot."""
+        """Disconnect from Slack and cease reconnect attempts."""
         self.heartbeat.stop()
         if self.ws:
             self.ws.close()
