@@ -1,5 +1,7 @@
 import json
 import collections
+
+import requests
 from tornado.httpclient import AsyncHTTPClient
 from tornado.websocket import websocket_connect
 from tornado import ioloop
@@ -36,7 +38,21 @@ class Dizzybot(object):
         """Stores an event in the ring buffer."""
         self.recent.append(evt)
 
-    def respond(self, evt, msg, thread=True):
+    def post_message(self, msg):
+        """Posts a fully defined Slack message via the web API.
+
+        Useful when you want to use rich formatting features that the RTM
+        API does not support (ala links).
+        """
+        msg['as_user'] = True
+        return requests.post(
+            'https://slack.com/api/chat.postMessage',
+            json=msg,
+            headers={
+              'Authorization': f'Bearer {self.token}'
+        })
+
+    def respond(self, evt, msg, thread=True, rich=False):
         """Responds to a message in the same channel.
 
         Parameters
@@ -74,11 +90,15 @@ class Dizzybot(object):
         if thread:
             full_msg['thread_ts'] = evt.get('thread_ts', evt.get('ts'))
 
-        self.ws.write_message(json.dumps(full_msg))
+        if rich:
+            self.post_message(full_msg)
+        else:
+            self.ws.write_message(json.dumps(full_msg))
+
         self.msg_id += 1
         return msg_id
 
-    def send(self, msg, channel):
+    def send(self, msg, channel, rich=False):
         """Sends a message to a channel.
 
         Parameters
@@ -106,11 +126,14 @@ class Dizzybot(object):
             full_msg['text'] = msg
         else:
             raise TypeError('unsupported msg type: {}'.format(type(msg)))
-        self.ws.write_message(json.dumps(full_msg))
+        if rich:
+            self.post_message(full_msg)
+        else:
+            self.ws.write_message(json.dumps(full_msg))
         self.msg_id += 1
         return msg_id
 
-    def write(self, msg):
+    def write(self, msg, rich=False):
         """Writes a raw message dictionary on the websocket.
 
         Parameters
@@ -125,7 +148,10 @@ class Dizzybot(object):
         """
         msg_id = self.msg_id
         msg['id'] = msg_id
-        self.ws.write_message(json.dumps(msg))
+        if rich:
+            self.post_message(full_msg)
+        else:
+            self.ws.write_message(json.dumps(full_msg))
         self.msg_id += 1
         return msg_id
 
